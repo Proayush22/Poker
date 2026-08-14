@@ -1,0 +1,138 @@
+{
+    "reference_screen_size": [
+        3456,
+        2234
+    ],
+    "table_region": [
+        908,
+        574,
+        1638,
+        1203
+    ],
+    "hero_cards_region": [
+        1605,
+        1428,
+        245,
+        170
+    ],
+    "board_cards_region": [
+        1413,
+        1030,
+        375,
+        175
+    ],
+    "pot_region": [
+        1625,
+        970,
+        220,
+        62
+    ],
+    "hero_stack_region": [
+        1625,
+        1635,
+        205,
+        52
+    ],
+    "action_region": [
+        1875,
+        1585,
+        670,
+        192
+    ],
+    "call_button_region": [
+        2108,
+        1672,
+        207,
+        99
+    ],
+    "raise_button_region": [
+        2332,
+        1672,
+        207,
+        99
+    ],
+    "bet_input_region": [
+        2230,
+        1595,
+        160,
+        65
+    ],
+    "player_positions": {
+        "hero": [
+            1720,
+            1518
+        ],
+        "left_bottom": [
+            1117,
+            1293
+        ],
+        "left_top": [
+            1134,
+            794
+        ],
+        "top": [
+            1731,
+            679
+        ],
+        "right_top": [
+            2321,
+            794
+        ],
+        "right_bottom": [
+            2337,
+            1293
+        ]
+    },
+    "seat_clockwise_order": [
+        "top",
+        "right_top",
+        "right_bottom",
+        "hero",
+        "left_bottom",
+        "left_top"
+    ],
+    "player_cache": {
+        "left_bottom": {
+            "screen_name": "ne",
+            "stats": {}
+        },
+        "left_top": {
+            "screen_name": "ye",
+            "stats": {}
+        },
+        "top": {
+            "screen_name": "ape",
+            "stats": {}
+        },
+        "right_bottom": {
+            "screen_name": "ne",
+            "stats": {}
+        },
+        "right_top": {
+            "screen_name": "eepenne",
+            "stats": {}
+        }
+    },
+    "fold_button": [
+        1988,
+        1721
+    ],
+    "call_button": [
+        2212,
+        1721
+    ],
+    "raise_button": [
+        2436,
+        1721
+    ],
+    "bet_input": [
+        2308,
+        1627
+    ],
+    "preflop_raise_size": 3.0,
+    "three_bet_size_ip": 3.0,
+    "three_bet_size_oop": 3.5,
+    "four_bet_size": 2.5,
+    "vpip_threshold": 27.0,
+    "three_bet_threshold": 20.0
+}
