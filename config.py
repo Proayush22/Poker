@@ -23,7 +23,8 @@ class PokerConfig:
     reference_screen_size: Tuple[int, int] = (3456, 2234)
     table_region: Tuple[int, int, int, int] = (908, 574, 1638, 1203)
     hero_cards_region: Tuple[int, int, int, int] = (1605, 1428, 245, 170)
-    board_cards_region: Tuple[int, int, int, int] = (1413, 1030, 375, 175)
+    # Wide enough for every community-card slot, not only the three-card flop.
+    board_cards_region: Tuple[int, int, int, int] = (1413, 1030, 650, 175)
     pot_region: Tuple[int, int, int, int] = (1625, 970, 220, 62)
     hero_stack_region: Tuple[int, int, int, int] = (1625, 1635, 205, 52)
     action_region: Tuple[int, int, int, int] = (1875, 1585, 670, 192)
