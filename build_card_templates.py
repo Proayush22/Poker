@@ -18,6 +18,33 @@ GRIDS = (
     ("small_grid.png", (34, 158, 283), 13, ("2♥", "4♣", "9♥"), ("5♣", "3♠", "7♠")),
 )
 
+# Single exposed row from CoinPoker's four-colour deck.  These clean, upright
+# glyphs are especially useful for separating the similarly shaped A/J/Q.
+SINGLE_ROWS = (
+    ("four_color_row.png", (48, 143, 238, 333, 428), 37,
+     ("A♣", "K♦", "Q♠", "J♥", "T♥")),
+)
+
+
+def add_rotated_rank_variants(ranks, rank_labels):
+    """Cover the slight fan/tilt used for the two hero cards."""
+    originals = list(zip(ranks, rank_labels))
+    ranks.clear()
+    rank_labels.clear()
+    center = (39.5, 39.5)
+    for image, label in originals:
+        for angle in (-8, -4, 0, 4, 8):
+            matrix = cv2.getRotationMatrix2D(center, angle, 1.0)
+            ranks.append(cv2.warpAffine(
+                image,
+                matrix,
+                (80, 80),
+                flags=cv2.INTER_NEAREST,
+                borderMode=cv2.BORDER_CONSTANT,
+                borderValue=0,
+            ))
+            rank_labels.append(label)
+
 
 def extract_card(image_rgb, x, y, label, ranks, rank_labels, suits, suit_labels):
     rank_region = image_rgb[y + 2:y + 55, x + 3:x + 50]
@@ -44,19 +71,21 @@ def main():
         for x, label in zip(columns, bottom_labels):
             extract_card(image_rgb, x, top_y + 100, label, ranks, rank_labels, suits, suit_labels)
 
-    # The grid samples contain every rank except J. The live J♦7♠ crop adds J.
-    image_bgr = cv2.imread(str(SAMPLES / "hero_j7.png"))
-    image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
-    # Keep only the printed J. Including the small diamond below it made a
-    # similarly cropped Q look too much like the J template.
-    j_rank = CardRecognizer.normalize_symbol(image_rgb[8:68, 15:60])
-    j_suit = CardRecognizer.normalize_symbol(image_rgb[48:125, 15:82], largest_only=True)
-    if j_rank is None or j_suit is None:
-        raise RuntimeError("Could not extract J♦ from hero_j7.png")
-    ranks.append(j_rank)
-    rank_labels.append("J")
-    suits.append(j_suit)
-    suit_labels.append("♦")
+    for filename, columns, top_y, labels in SINGLE_ROWS:
+        image_bgr = cv2.imread(str(SAMPLES / filename))
+        if image_bgr is None:
+            raise FileNotFoundError(SAMPLES / filename)
+        image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
+        for x, label in zip(columns, labels):
+            rank = CardRecognizer.normalize_symbol(
+                image_rgb[top_y + 2:top_y + 55, x + 3:x + 50]
+            )
+            if rank is None:
+                raise RuntimeError(f"Could not extract rank from {label} at {(x, top_y)}")
+            ranks.append(rank)
+            rank_labels.append(label[:-1])
+
+    add_rotated_rank_variants(ranks, rank_labels)
 
     output = CardRecognizer.TEMPLATE_PATH
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -96,6 +125,18 @@ def validate_samples():
                 seen_suits.add(expected[1])
                 if actual != expected:
                     failures.append((filename, label, actual))
+
+    for filename, columns, top_y, labels in SINGLE_ROWS:
+        image_bgr = cv2.imread(str(SAMPLES / filename))
+        image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
+        for x, label in zip(columns, labels):
+            actual = ScreenReader._read_rank(
+                image_rgb[top_y + 2:top_y + 55, x + 3:x + 50]
+            )
+            expected = label[:-1]
+            seen_ranks.add(expected)
+            if actual != expected:
+                failures.append((filename, label, actual))
 
     hero_bgr = cv2.imread(str(SAMPLES / "hero_j7.png"))
     hero_rgb = cv2.cvtColor(hero_bgr, cv2.COLOR_BGR2RGB)

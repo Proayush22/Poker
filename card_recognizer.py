@@ -34,6 +34,22 @@ class CardRecognizer:
         mask = cls.foreground_mask(region_rgb)
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         contours = [contour for contour in contours if cv2.contourArea(contour) >= max(5, mask.size * 0.002)]
+        # Hero-card crops can include a dark strip above the tilted card.  It
+        # touches the crop edge and spans almost the full width, unlike a
+        # printed rank/suit.  Ignoring it prevents J/Q/A from being compared as
+        # a glyph-plus-background composite.
+        filtered = []
+        for contour in contours:
+            x, y, width, height = cv2.boundingRect(contour)
+            edge_spanning = (
+                (x == 0 or x + width >= mask.shape[1]) and height >= mask.shape[0] * 0.55
+            ) or (
+                (y == 0 or y + height >= mask.shape[0]) and width >= mask.shape[1] * 0.55
+            )
+            if not edge_spanning:
+                filtered.append(contour)
+        if filtered:
+            contours = filtered
         if not contours:
             return None
 
@@ -73,6 +89,13 @@ class CardRecognizer:
                 "suit_images": data["suit_images"],
                 "suit_labels": data["suit_labels"],
             }
+            # All rank glyphs have the same 80x80 shape.  Pre-normalizing them
+            # lets recognition use one vector operation instead of hundreds of
+            # separate OpenCV template calls.
+            flattened = cls._templates["rank_images"].astype(np.float32).reshape(-1, 6400)
+            flattened -= flattened.mean(axis=1, keepdims=True)
+            norms = np.linalg.norm(flattened, axis=1, keepdims=True)
+            cls._templates["rank_vectors"] = flattened / np.maximum(norms, 1e-6)
         return cls._templates
 
     @classmethod
@@ -125,13 +148,16 @@ class CardRecognizer:
         if candidate is None:
             return None, 0.0, 0.0
 
+        candidate_vector = candidate.astype(np.float32).reshape(-1)
+        candidate_vector -= candidate_vector.mean()
+        candidate_norm = np.linalg.norm(candidate_vector)
+        if candidate_norm <= 1e-6:
+            return None, 0.0, 0.0
+        scores = templates["rank_vectors"] @ (candidate_vector / candidate_norm)
+
         best_by_label = {}
-        for template, label in zip(templates["rank_images"], templates["rank_labels"]):
-            score = float(cv2.matchTemplate(
-                candidate,
-                template,
-                cv2.TM_CCOEFF_NORMED,
-            )[0, 0])
+        for score, label in zip(scores, templates["rank_labels"]):
+            score = float(score)
             label = str(label)
             best_by_label[label] = max(score, best_by_label.get(label, -1.0))
 

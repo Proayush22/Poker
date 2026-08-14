@@ -119,16 +119,23 @@ class ScreenReader:
         texts = [
             pytesseract.image_to_string(enlarged, config='--psm 6'),
             pytesseract.image_to_string(binary, config='--psm 6'),
-            pytesseract.image_to_string(enlarged, config='--psm 11'),
         ]
         combined = ' '.join(text.upper() for text in texts)
         letters = ''.join(character for character in combined if character.isalpha())
         if 'CHECK' in letters:
             return 'check', 0.0
         if 'CALL' in letters:
-            amount = ScreenReader.read_button_amount_image(image_rgb, 'call')
-            if amount > 0:
-                return 'call', amount
+            # Reuse these OCR results rather than launching two more Tesseract
+            # processes for the same button crop.
+            import re
+            for text in texts:
+                normalized = ' '.join(text.lower().split())
+                search_text = normalized.split('call', 1)[-1]
+                match = re.search(r'([0-9]+(?:\.[0-9]+)?)', search_text)
+                if match:
+                    amount = ScreenReader._normalize_bb_number(match.group(1))
+                    if amount > 0:
+                        return 'call', amount
         return 'unknown', 0.0
 
     def read_raise_amount(self) -> float:
@@ -256,88 +263,40 @@ class ScreenReader:
 
     @staticmethod
     def _read_rank(region_rgb: np.ndarray) -> Optional[str]:
-        from collections import Counter
         import re
 
         region_rgb = region_rgb[:, :, :3]
-        enlarged = cv2.resize(region_rgb, None, fx=5, fy=5, interpolation=cv2.INTER_CUBIC)
-        gray = cv2.cvtColor(enlarged, cv2.COLOR_RGB2GRAY)
-        _, binary = cv2.threshold(gray, 180, 255, cv2.THRESH_BINARY)
-
-        # A second OCR view isolates the printed card glyph from the white card
-        # face. This is especially useful for red ranks and dimmed/folded cards.
-        foreground = CardRecognizer.foreground_mask(region_rgb)
-        contours, _ = cv2.findContours(foreground, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        contours = [
-            contour for contour in contours
-            if cv2.contourArea(contour) >= max(4, foreground.size * 0.002)
-        ]
-        glyph_view = None
-        if contours:
-            x1 = min(cv2.boundingRect(contour)[0] for contour in contours)
-            y1 = min(cv2.boundingRect(contour)[1] for contour in contours)
-            x2 = max(cv2.boundingRect(contour)[0] + cv2.boundingRect(contour)[2] for contour in contours)
-            y2 = max(cv2.boundingRect(contour)[1] + cv2.boundingRect(contour)[3] for contour in contours)
-            glyph = foreground[y1:y2, x1:x2]
-            if glyph.size:
-                padding = max(8, round(max(glyph.shape) * 0.25))
-                glyph_view = cv2.copyMakeBorder(
-                    255 - glyph,
-                    padding,
-                    padding,
-                    padding,
-                    padding,
-                    cv2.BORDER_CONSTANT,
-                    value=255,
-                )
-                glyph_view = cv2.resize(
-                    glyph_view,
-                    None,
-                    fx=5,
-                    fy=5,
-                    interpolation=cv2.INTER_NEAREST,
-                )
-
-        ocr_reads = []
-        candidates = [enlarged, binary]
-        if glyph_view is not None:
-            candidates.append(glyph_view)
-        for candidate in candidates:
-            text = pytesseract.image_to_string(
-                candidate,
-                config='--psm 10 -c tessedit_char_whitelist=0123456789TJQKA',
-            ).upper()
-            match = re.search(r'10|[2-9TJQKA]', text)
-            if match:
-                ocr_reads.append('T' if match.group(0) == '10' else match.group(0))
-
-        ocr_rank = Counter(ocr_reads).most_common(1)[0][0] if ocr_reads else None
         template_rank, template_score, template_margin = CardRecognizer.recognize_rank_scored(
             region_rgb
         )
+        # The supplied four-colour samples provide a fast, reliable path for
+        # clear glyphs.  Only ambiguous/partly occluded ranks pay the OCR cost.
+        if template_score >= 0.72 and template_margin >= 0.10:
+            return template_rank
 
-        # OCR remains the primary rank reader. The CoinPoker Q and J are a
-        # known ambiguous pair at small sizes, so a confident font-shape match
-        # corrects only that disagreement. Very strong matches also guard other
-        # single-pass OCR slips without affecting ordinary text reads.
+        enlarged = cv2.resize(region_rgb, None, fx=5, fy=5, interpolation=cv2.INTER_CUBIC)
+        text = pytesseract.image_to_string(
+            enlarged,
+            config='--psm 10 -c tessedit_char_whitelist=0123456789TJQKA',
+        ).upper()
+        match = re.search(r'10|[2-9TJQKA]', text)
+        ocr_rank = None
+        if match:
+            ocr_rank = 'T' if match.group(0) == '10' else match.group(0)
+
+        # Q/J are the font's closest pair.  Prefer a reasonably separated
+        # shape match when Tesseract calls one of them the other.  The same
+        # guard fixes a J that Tesseract occasionally labels A, without
+        # overriding the real live J example where the shape is ambiguous.
         if (
             ocr_rank
-            and template_rank
+            and template_rank in {'J', 'Q'}
             and ocr_rank != template_rank
-            and {ocr_rank, template_rank} == {'Q', 'J'}
-            and template_score >= 0.52
+            and template_score >= 0.58
             and template_margin >= 0.05
         ):
             return template_rank
-        if (
-            ocr_rank
-            and template_rank
-            and ocr_rank != template_rank
-            and template_score >= 0.82
-            and template_margin >= 0.10
-        ):
-            return template_rank
-        return ocr_rank or template_rank
+        return ocr_rank or (template_rank if template_score >= 0.35 else None)
 
     @staticmethod
     def _read_suit(region_rgb: np.ndarray) -> Optional[str]:
@@ -471,7 +430,7 @@ class ScreenReader:
 
     @staticmethod
     def find_dealer_button_image(image_rgb: np.ndarray) -> Optional[Tuple[float, float]]:
-        """Locate CoinPoker's red dealer puck by its white ``D`` glyph."""
+        """Locate CoinPoker's red dealer puck, using OCR only as a fallback."""
         image_rgb = image_rgb[:, :, :3]
         image_height, image_width = image_rgb.shape[:2]
         hsv = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2HSV)
@@ -485,7 +444,9 @@ class ScreenReader:
         minimum_side = max(8, round(min(image_width, image_height) * 0.012))
         maximum_side = max(40, round(min(image_width, image_height) * 0.10))
         minimum_area = image_width * image_height * 0.00004
-        candidates = []
+        gray = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2GRAY)
+        geometric_candidates = []
+        ocr_candidates = []
         for contour in contours:
             x, y, width, height = cv2.boundingRect(contour)
             area = cv2.contourArea(contour)
@@ -498,6 +459,50 @@ class ScreenReader:
             ):
                 continue
 
+            point = (x + width / 2, y + height / 2)
+            ocr_candidates.append((contour, point))
+
+            # The puck has a stable red fill, a small white D, and a saturated
+            # coloured ring.  Chips and card pips fail at least one of these
+            # tests.  This path takes milliseconds rather than launching OCR
+            # for every red object on the table.
+            inner_gray = gray[y:y + height, x:x + width]
+            inner_red = red[y:y + height, x:x + width]
+            white_ratio = float(np.mean((inner_gray > 180) & (inner_red == 0)))
+            padding = max(5, round(max(width, height) * 0.25))
+            x1, x2 = max(0, x - padding), min(image_width, x + width + padding)
+            y1, y2 = max(0, y - padding), min(image_height, y + height + padding)
+            ring_saturation = hsv[y1:y2, x1:x2, 1]
+            ring_mask = np.ones(ring_saturation.shape, dtype=bool)
+            ring_mask[y - y1:y - y1 + height, x - x1:x - x1 + width] = False
+            saturated_ring_ratio = float(np.mean(ring_saturation[ring_mask] > 60))
+            radial_distance = (
+                ((point[0] - image_width / 2) / (image_width / 2)) ** 2
+                + ((point[1] - image_height / 2) / (image_height / 2)) ** 2
+            ) ** 0.5
+            fill_ratio = area / (width * height)
+            if (
+                0.08 <= white_ratio <= 0.24
+                and saturated_ring_ratio >= 0.85
+                and 0.35 <= radial_distance <= 0.75
+                and 0.55 <= fill_ratio <= 0.78
+            ):
+                score = (
+                    abs(white_ratio - 0.15) * 3
+                    + abs(saturated_ring_ratio - 0.95)
+                    + abs(radial_distance - 0.58)
+                    + abs(fill_ratio - 0.66)
+                    + abs(aspect - 0.88) * 0.4
+                )
+                geometric_candidates.append((score, point))
+
+        if geometric_candidates:
+            return min(geometric_candidates, key=lambda item: item[0])[1]
+
+        candidates = []
+        for contour, point in ocr_candidates:
+            x, y, width, height = cv2.boundingRect(contour)
+            area = cv2.contourArea(contour)
             padding = max(5, round(max(width, height) * 0.25))
             crop = image_rgb[
                 max(0, y - padding):min(image_height, y + height + padding),
@@ -517,7 +522,7 @@ class ScreenReader:
                 ),
             )
             if any('D' in text.upper() for text in texts):
-                candidates.append((area, (x + width / 2, y + height / 2)))
+                candidates.append((area, point))
 
         # There should be only one D. If anti-aliasing splits its red outline,
         # the largest matching red component is the complete puck.
@@ -610,6 +615,8 @@ class ScreenReader:
     @staticmethod
     def recognize_board_cards_image(image_rgb: np.ndarray) -> List[str]:
         """Locate and recognize up to five community cards in the board row."""
+        import re
+
         image_rgb = image_rgb[:, :, :3]
         white = cv2.inRange(image_rgb, np.array([180, 180, 180]), np.array([255, 255, 255]))
         contours, _ = cv2.findContours(white, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -620,17 +627,45 @@ class ScreenReader:
                 boxes.append((x, y, width, height))
         boxes.sort(key=lambda box: box[0])
 
-        cards = []
+        rank_regions = []
+        suit_regions = []
+        batch_parts = []
         for x, y, width, height in boxes[:5]:
-            rank_region = image_rgb[
+            rank_regions.append(image_rgb[
                 y + round(height * 0.01):y + round(height * 0.35),
                 x + round(width * 0.02):x + round(width * 0.45),
-            ]
-            suit_region = image_rgb[
+            ])
+            suit_regions.append(image_rgb[
                 y + round(height * 0.27):y + round(height * 0.70),
                 x + round(width * 0.01):x + round(width * 0.58),
+            ])
+            # One OCR row is substantially faster than starting Tesseract once
+            # per community card. Generous white spacing keeps ranks separate.
+            corner = image_rgb[
+                y:y + round(height * 0.40),
+                x:x + round(width * 0.50),
             ]
-            rank = ScreenReader._read_rank(rank_region)
+            batch_parts.extend((
+                cv2.resize(corner, (100, 120), interpolation=cv2.INTER_CUBIC),
+                np.full((120, 50, 3), 255, dtype=np.uint8),
+            ))
+
+        ranks = []
+        if batch_parts:
+            rank_row = np.concatenate(batch_parts, axis=1)
+            text = pytesseract.image_to_string(
+                rank_row,
+                config='--psm 7 -c tessedit_char_whitelist=0123456789TJQKA',
+            ).upper()
+            ranks = [
+                'T' if token == '10' else token
+                for token in re.findall(r'10|[2-9TJQKA]', text)
+            ]
+        if len(ranks) != len(rank_regions):
+            ranks = [ScreenReader._read_rank(region) for region in rank_regions]
+
+        cards = []
+        for rank, suit_region in zip(ranks, suit_regions):
             suit = ScreenReader._read_suit(suit_region)
             if rank and suit:
                 cards.append(f'{rank}{suit}')
