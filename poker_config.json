@@ -91,6 +91,8 @@
         "left_bottom",
         "left_top"
     ],
+    "player_profiles": {},
+    "seat_players": {},
     "fold_button": [
         1988,
         1721
@@ -112,5 +114,7 @@
     "three_bet_size_oop": 3.5,
     "four_bet_size": 2.5,
     "turn_poll_interval": 1.0,
-    "turn_confirmations_required": 1
+    "turn_confirmations_required": 1,
+    "profile_scan_interval": 5.0,
+    "minimum_profile_hands": 5
 }

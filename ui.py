@@ -188,6 +188,13 @@ class PokerBotApp(tk.Tk):
                     self._show_state(payload)
                 elif event == "turn":
                     self._show_turn(payload)
+                elif event == "player_profile":
+                    summary = payload.get('summary', {})
+                    self.status_detail.set(
+                        f"Profile: {payload['screen_name']} · {summary.get('hands', 0)} hands · "
+                        f"VPIP {summary.get('vpip') if summary.get('vpip') is not None else '—'} · "
+                        f"PFR {summary.get('pfr') if summary.get('pfr') is not None else '—'}"
+                    )
                 elif event == "trace":
                     self._show_trace(payload)
                 elif event == "error":
@@ -234,6 +241,7 @@ class PokerBotApp(tk.Tk):
         amount = f" {trace['amount']:.2f} BB" if trace['amount'] is not None else ''
         dealer = f" · dealer at {trace['dealer_seat']}" if trace.get('dealer_seat') else ''
         analysis = trace.get('hand_analysis') or {}
+        profile_adjustment = trace.get('profile_adjustment')
         postflop = ''
         if analysis.get('valid'):
             draws = []
@@ -256,6 +264,7 @@ class PokerBotApp(tk.Tk):
             f"Raise button: {trace['raise_amount']:.2f} BB · Input: {trace['bet_input_amount']:.2f} BB\n"
             f"Actions seen: {actions}\n"
             f"{postflop}"
+            f"Profile effect: {profile_adjustment or 'none — base TAG rule'}\n"
             f"Decision: {trace['action'].upper()}{amount}\n"
             f"Why: {trace['reason']}"
         )

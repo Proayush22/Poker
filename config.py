@@ -14,7 +14,7 @@ pynput==1.7.6
 import json
 import os
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 @dataclass
 class PokerConfig:
@@ -42,6 +42,10 @@ class PokerConfig:
     seat_clockwise_order: List[str] = field(default_factory=lambda: [
         'top', 'right_top', 'right_bottom', 'hero', 'left_bottom', 'left_top'
     ])
+    # Profiling branch: profiles follow screen names, while seats only point to
+    # the player currently occupying them.
+    player_profiles: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    seat_players: Dict[str, str] = field(default_factory=dict)
     # Betting buttons
     fold_button: Optional[Tuple[int, int]] = (1988, 1721)
     call_button: Optional[Tuple[int, int]] = (2212, 1721)
@@ -57,6 +61,8 @@ class PokerConfig:
     # Timing: action controls are distinctive enough for one confirmation.
     turn_poll_interval: float = 1.0
     turn_confirmations_required: int = 1
+    profile_scan_interval: float = 5.0
+    minimum_profile_hands: int = 5
 
     def scale_point(self, point: Tuple[int, int], screen_size: Tuple[int, int]) -> Tuple[int, int]:
         """Scale a point from the reference screenshot to the active display."""

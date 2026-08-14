@@ -25,6 +25,7 @@ class StrategyEngine:
         self.position_order = ['utg', 'hijack', 'cutoff', 'button', 'sb', 'bb']
         self.last_reason = ''
         self.last_analysis = {}
+        self.last_profile_adjustment = ''
         
     def get_action(self, game_state: Dict) -> Tuple[Action, Optional[float]]:
         """
@@ -41,6 +42,7 @@ class StrategyEngine:
         """
         self.last_reason = ''
         self.last_analysis = {}
+        self.last_profile_adjustment = ''
         street = game_state['street']
         
         if street == Street.PREFLOP:
@@ -73,6 +75,7 @@ class StrategyEngine:
         facing_raise = state.get('facing_raise', False) or state.get('to_call', 0) > 1
         facing_three_bet = state.get('facing_three_bet', False)
         facing_four_bet = state.get('facing_four_bet', False)
+        opponent_profile = self._relevant_profile(state)
         
         # Facing a 4-bet after we 3-bet: continue only with the top of range.
         if facing_four_bet:
@@ -87,9 +90,49 @@ class StrategyEngine:
         
         # TAG 4-bet framework after we open and face a 3-bet.
         if facing_three_bet:
+            opponent_three_bet = opponent_profile.get('three_bet') if opponent_profile else None
             if self._is_four_bet_value(hand_info):
                 self.last_reason = 'In the pure-value four-bet range (QQ+ or AK); raising.'
                 return Action.RAISE, self.calculate_four_bet_size(state)
+            if (
+                opponent_three_bet is not None
+                and opponent_three_bet >= 15
+                and self._is_wheel_ace(hand_info)
+            ):
+                self.last_profile_adjustment = (
+                    f"{opponent_profile['screen_name']} 3-bets {opponent_three_bet:.0f}%; "
+                    'wheel-ace four-bet bluff enabled.'
+                )
+                self.last_reason = self.last_profile_adjustment
+                return Action.RAISE, self.calculate_four_bet_size(state)
+            if (
+                opponent_three_bet is not None
+                and opponent_three_bet >= 12
+                and (
+                    self._is_exact(hand_info, 14, 11, suited=True)
+                    or self._is_exact(hand_info, 13, 12, suited=True)
+                )
+            ):
+                self.last_profile_adjustment = (
+                    f"{opponent_profile['screen_name']} has a high {opponent_three_bet:.0f}% "
+                    '3-bet rate; widening the call range.'
+                )
+                self.last_reason = self.last_profile_adjustment
+                return Action.CALL, None
+            if (
+                opponent_three_bet is not None
+                and opponent_three_bet <= 5
+                and (
+                    self._is_exact(hand_info, 14, 12, suited=False)
+                    or (hand_info['is_pair'] and hand_info['high_rank'] == 10)
+                )
+            ):
+                self.last_profile_adjustment = (
+                    f"{opponent_profile['screen_name']} has a tight {opponent_three_bet:.0f}% "
+                    '3-bet rate; folding the bottom of the trap range.'
+                )
+                self.last_reason = self.last_profile_adjustment
+                return Action.FOLD, None
             if self._is_trap_hand(hand_info):  # TT/JJ/AQs/AQo
                 self.last_reason = 'Trap-range hand versus a three-bet; calling rather than four-betting.'
                 return Action.CALL, None
@@ -125,18 +168,60 @@ class StrategyEngine:
         if raiser_position is None:
             raiser_position = 'utg'
 
+        profile = self._relevant_profile(state, raiser_position)
+        opener_pfr = profile.get('pfr') if profile else None
+
         if self._is_tag_three_bet(hand_info, position, raiser_position):
+            if opener_pfr is not None and opener_pfr <= 12 and self._is_wheel_ace(hand_info):
+                self.last_profile_adjustment = (
+                    f"{profile['screen_name']} opens only {opener_pfr:.0f}% PFR; "
+                    'removing the wheel-ace bluff.'
+                )
+                self.last_reason = self.last_profile_adjustment
+                return Action.FOLD, None
             size = self.calculate_three_bet_size(state, position)
             self.last_reason = (
                 f'Hand is inside the {position.upper()} TAG three-bet range versus '
                 f'{raiser_position.upper()}; raising to {size:.2f} BB.'
             )
             return Action.RAISE, size
+        if (
+            opener_pfr is not None
+            and opener_pfr >= 28
+            and self._is_loose_opener_three_bet(hand_info, position)
+        ):
+            size = self.calculate_three_bet_size(state, position)
+            self.last_profile_adjustment = (
+                f"{profile['screen_name']} opens {opener_pfr:.0f}% PFR; "
+                f'widening the value three-bet range to {size:.2f} BB.'
+            )
+            self.last_reason = self.last_profile_adjustment
+            return Action.RAISE, size
         if position != 'sb' and self._is_tag_flat_call(hand_info, position):
             self.last_reason = f'Hand is inside the defined {position.upper()} flat-call range.'
             return Action.CALL, None
         self.last_reason = f'Hand is outside the {position.upper()} continue range versus this open; folding.'
         return Action.FOLD, None
+
+    def _is_loose_opener_three_bet(self, hand: Dict, position: str) -> bool:
+        if position in ('sb', 'bb'):
+            return (
+                self._is_pair_at_least(hand, 9)
+                or self._is_ace_x(hand, 11, suited=True)
+                or self._is_ace_x(hand, 12, suited=False)
+                or self._is_exact(hand, 13, 12, suited=True)
+                or self._is_exact(hand, 13, 11, suited=True)
+            )
+        if position in ('cutoff', 'button'):
+            return (
+                self._is_pair_at_least(hand, 9)
+                or self._is_ace_x(hand, 10, suited=True)
+                or self._is_ace_x(hand, 11, suited=False)
+                or self._is_exact(hand, 13, 12, suited=True)
+                or self._is_exact(hand, 13, 11, suited=True)
+                or self._is_exact(hand, 12, 11, suited=True)
+            )
+        return False
 
     @staticmethod
     def _is_pair_at_least(hand: Dict, rank: int) -> bool:
@@ -345,17 +430,37 @@ class StrategyEngine:
         self.last_analysis = analysis
         label = analysis['label']
         category = analysis.get('category_value', 0)
+        profile = self._relevant_profile(state)
+        aggression = profile.get('aggression_factor') if profile else None
+        fold_rate = profile.get('fold_rate') if profile else None
+        vpip = profile.get('vpip') if profile else None
+        c_bet = profile.get('c_bet') if profile else None
 
         if not facing_bet:
             if category >= 2:
-                self.last_reason = f'{label.title()} detected; value betting about 70% of the pot.'
-                return Action.RAISE, self._postflop_raise_size(state, 0.70)
+                fraction = 0.80 if (
+                    (fold_rate is not None and fold_rate <= 25)
+                    or (vpip is not None and vpip >= 40)
+                ) else 0.60 if fold_rate is not None and fold_rate >= 60 else 0.70
+                if profile and fraction != 0.70:
+                    tendency = 'calls frequently' if fraction == 0.80 else 'folds frequently'
+                    self.last_profile_adjustment = (
+                        f"{profile['screen_name']} {tendency}; adjusted value size to {fraction:.0%} pot."
+                    )
+                self.last_reason = self.last_profile_adjustment or f'{label.title()} detected; value betting about 70% of the pot.'
+                return Action.RAISE, self._postflop_raise_size(state, fraction)
             if analysis.get('overpair') or analysis.get('top_pair'):
                 if street == Street.RIVER and analysis.get('top_pair') and analysis.get('kicker', 0) < 11:
                     self.last_reason = f'{label.title()} with a weak kicker; checking for pot control.'
                     return Action.CHECK, None
-                self.last_reason = f'{label.title()} detected; making a controlled value bet.'
-                return Action.RAISE, self._postflop_raise_size(state, 0.55)
+                fraction = 0.65 if fold_rate is not None and fold_rate <= 25 else 0.45 if fold_rate is not None and fold_rate >= 60 else 0.55
+                if profile and fraction != 0.55:
+                    self.last_profile_adjustment = (
+                        f"{profile['screen_name']} post-flop fold rate is {fold_rate:.0f}%; "
+                        f'adjusted one-pair value size to {fraction:.0%} pot.'
+                    )
+                self.last_reason = self.last_profile_adjustment or f'{label.title()} detected; making a controlled value bet.'
+                return Action.RAISE, self._postflop_raise_size(state, fraction)
             if street != Street.RIVER and analysis.get('strong_draw'):
                 draw_name = self._draw_name(analysis)
                 self.last_reason = f'{draw_name} detected; semi-bluffing about 60% of the pot.'
@@ -363,9 +468,17 @@ class StrategyEngine:
             if (
                 street == Street.FLOP
                 and state.get('is_preflop_aggressor', False)
-                and analysis.get('overcards', 0) == 2
+                and (
+                    analysis.get('overcards', 0) == 2
+                    or (fold_rate is not None and fold_rate >= 60 and analysis.get('overcards', 0) >= 1)
+                )
             ):
-                self.last_reason = 'Two overcards as the preflop aggressor; making a small continuation bet.'
+                if profile and fold_rate is not None and fold_rate >= 60:
+                    self.last_profile_adjustment = (
+                        f"{profile['screen_name']} folds {fold_rate:.0f}% post-flop; "
+                        'expanding the small continuation-bet bluff range.'
+                    )
+                self.last_reason = self.last_profile_adjustment or 'Two overcards as the preflop aggressor; making a small continuation bet.'
                 return Action.RAISE, self._postflop_raise_size(state, 0.33)
             self.last_reason = f'{label.title()} without enough value to bet; checking.'
             return Action.CHECK, None
@@ -390,13 +503,41 @@ class StrategyEngine:
         if analysis.get('overpair') or analysis.get('top_pair'):
             thresholds = {Street.FLOP: 0.75, Street.TURN: 0.60, Street.RIVER: 0.45}
             threshold = thresholds[street]
+            if aggression is not None and aggression >= 2.5:
+                threshold += 0.15
+                self.last_profile_adjustment = (
+                    f"{profile['screen_name']} aggression factor is {aggression:.2f}; "
+                    'widening the bluff-catching threshold.'
+                )
+            elif aggression is not None and aggression <= 0.75:
+                threshold = max(0.20, threshold - 0.12)
+                self.last_profile_adjustment = (
+                    f"{profile['screen_name']} aggression factor is only {aggression:.2f}; "
+                    'tightening the one-pair continue threshold.'
+                )
+            if street == Street.FLOP and c_bet is not None and c_bet >= 70:
+                threshold += 0.08
+                self.last_profile_adjustment = (
+                    f"{profile['screen_name']} continuation-bets {c_bet:.0f}%; "
+                    'widening the flop bluff-catching threshold.'
+                )
+            elif street == Street.FLOP and c_bet is not None and c_bet <= 35:
+                threshold = max(0.20, threshold - 0.08)
+                self.last_profile_adjustment = (
+                    f"{profile['screen_name']} continuation-bets only {c_bet:.0f}%; "
+                    'giving the flop bet more credit.'
+                )
             if bet_fraction <= threshold:
-                self.last_reason = (
+                base_reason = (
                     f'{label.title()} versus a {bet_fraction:.0%}-pot bet; '
                     f'calling within the {street.value} threshold.'
                 )
+                self.last_reason = f'{base_reason} {self.last_profile_adjustment}'.strip()
                 return Action.CALL, None
-            self.last_reason = f'{label.title()} versus an oversized {bet_fraction:.0%}-pot bet; folding.'
+            self.last_reason = (
+                f'{label.title()} versus an oversized {bet_fraction:.0%}-pot bet; folding. '
+                f'{self.last_profile_adjustment}'
+            ).strip()
             return Action.FOLD, None
 
         if street != Street.RIVER and analysis.get('combo_draw') and bet_fraction <= 0.65:
@@ -417,8 +558,22 @@ class StrategyEngine:
 
         if analysis.get('middle_pair') or analysis.get('bottom_pair') or analysis.get('pocket_pair'):
             threshold = 0.28 if street == Street.FLOP else 0.20
+            if aggression is not None and aggression >= 2.5:
+                threshold += 0.10
+                self.last_profile_adjustment = (
+                    f"{profile['screen_name']} is highly aggressive; allowing a wider small-bet call."
+                )
+            if c_bet is not None and c_bet >= 70 and street == Street.FLOP:
+                threshold += 0.05
+                self.last_profile_adjustment = (
+                    f"{profile['screen_name']} has a {c_bet:.0f}% c-bet rate; "
+                    'defending a little wider on the flop.'
+                )
             if bet_fraction <= threshold:
-                self.last_reason = f'{label.title()} versus a small bet; calling once for pot control.'
+                self.last_reason = (
+                    f'{label.title()} versus a small bet; calling once for pot control. '
+                    f'{self.last_profile_adjustment}'
+                ).strip()
                 return Action.CALL, None
             self.last_reason = f'{label.title()} versus meaningful aggression; folding.'
             return Action.FOLD, None
@@ -437,6 +592,33 @@ class StrategyEngine:
         if analysis.get('gutshot'):
             return 'Gutshot straight draw'
         return 'Draw'
+
+    def _relevant_profile(self, state: Dict, position: Optional[str] = None) -> Dict:
+        """Select a sufficiently sampled opponent involved in the current action."""
+        profiles = state.get('opponent_profiles', {})
+        if not profiles:
+            return {}
+        target = position or state.get('raiser_position')
+        if not target:
+            target = next(
+                (
+                    seat for seat, action in state.get('observed_actions', {}).items()
+                    if action in ('BET', 'RAISE', 'ALL IN')
+                ),
+                None,
+            )
+        profile = profiles.get(target) if target else None
+        if profile is None:
+            profile = max(
+                profiles.values(),
+                key=lambda item: (item.get('hands', 0), item.get('aggression_factor', 0)),
+            )
+        if (
+            not profile.get('has_external_stats')
+            and profile.get('hands', 0) < self.config.minimum_profile_hands
+        ):
+            return {}
+        return profile
 
     @staticmethod
     def _postflop_raise_size(state: Dict, pot_fraction: float) -> float:

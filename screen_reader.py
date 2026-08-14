@@ -6,6 +6,7 @@ import pyautogui
 from PIL import Image
 import mss
 from typing import Dict, List, Optional, Tuple
+import time
 
 from card_recognizer import CardRecognizer
 
@@ -28,6 +29,57 @@ class ScreenReader:
         monitor = {'left': left, 'top': top, 'width': width, 'height': height}
         screenshot = self.sct.grab(monitor)
         return np.array(screenshot)
+
+    def read_player_name(self, position: Tuple[int, int]) -> Optional[str]:
+        """Read the screen name shown on a seat's nameplate."""
+        try:
+            name_region = self._pyautogui_region(
+                (position[0] - 122, position[1] + 78, 244, 52)
+            )
+            screenshot = pyautogui.screenshot(region=name_region)
+            text = pytesseract.image_to_string(screenshot, config='--psm 7')
+            cleaned = ''.join(
+                character for character in text.strip()
+                if character.isalnum() or character in '_-'
+            )
+            if not cleaned or cleaned.upper() in {'FOLD', 'CALL', 'CHECK', 'BET', 'RAISE', 'BB', 'SB'}:
+                return None
+            return cleaned
+        except Exception:
+            return None
+
+    def read_player_stats(self, position: Tuple[int, int]) -> Dict[str, float]:
+        """Hover the avatar center and OCR any displayed poker statistics."""
+        import re
+
+        try:
+            x, y = self.config.scale_point(position, pyautogui.size())
+            pyautogui.moveTo(x, y, duration=0.2)
+            time.sleep(0.35)
+            tooltip_region = self._pyautogui_region(
+                (position[0] - 190, position[1] - 190, 380, 300)
+            )
+            screenshot = pyautogui.screenshot(region=tooltip_region)
+            text = pytesseract.image_to_string(screenshot, config='--psm 6')
+            stats = {}
+            aliases = {
+                'vpip': ('VPIP', 'VP'),
+                'pfr': ('PFR', 'PF'),
+                'three_bet': ('3BET', '3-BET', '3B'),
+                'c_bet': ('CBET', 'C-BET', 'CB'),
+            }
+            for line in text.splitlines():
+                upper = line.upper().replace(' ', '')
+                for stat, labels in aliases.items():
+                    if any(label.replace(' ', '') in upper for label in labels):
+                        numbers = re.findall(r'\d+(?:\.\d+)?', line)
+                        if numbers:
+                            value = float(numbers[-1])
+                            if 0 <= value <= 100:
+                                stats[stat] = value
+            return stats
+        except Exception:
+            return {}
     
     def read_player_action(self, position: Tuple[int, int]) -> Optional[str]:
         """Read a visible Fold, Call, Check, Bet, or Raise label at a seat."""
