@@ -188,10 +188,6 @@ class PokerBotApp(tk.Tk):
                     self._show_state(payload)
                 elif event == "turn":
                     self._show_turn(payload)
-                elif event == "player":
-                    self.status_detail.set(
-                        f"New player at {payload['seat']}: {payload['screen_name']} — profile cached."
-                    )
                 elif event == "trace":
                     self._show_trace(payload)
                 elif event == "error":
@@ -228,7 +224,10 @@ class PokerBotApp(tk.Tk):
         elif turn["visible"]:
             self.status_detail.set("Action controls detected — confirming your turn.")
         else:
-            self.status_detail.set("Monitoring for the Fold / Call / Raise controls.")
+            self.status_detail.set(
+                f"Checking for Fold / Check / Call / Raise every "
+                f"{self.config_data.turn_poll_interval:.1f} second."
+            )
 
     def _show_trace(self, trace):
         actions = ', '.join(f"{seat}: {action}" for seat, action in trace['observed_actions'].items()) or 'none detected'

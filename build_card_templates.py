@@ -47,7 +47,9 @@ def main():
     # The grid samples contain every rank except J. The live J♦7♠ crop adds J.
     image_bgr = cv2.imread(str(SAMPLES / "hero_j7.png"))
     image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
-    j_rank = CardRecognizer.normalize_symbol(image_rgb[8:83, 15:71])
+    # Keep only the printed J. Including the small diamond below it made a
+    # similarly cropped Q look too much like the J template.
+    j_rank = CardRecognizer.normalize_symbol(image_rgb[8:68, 15:60])
     j_suit = CardRecognizer.normalize_symbol(image_rgb[48:125, 15:82], largest_only=True)
     if j_rank is None or j_suit is None:
         raise RuntimeError("Could not extract J♦ from hero_j7.png")
@@ -97,7 +99,7 @@ def validate_samples():
 
     hero_bgr = cv2.imread(str(SAMPLES / "hero_j7.png"))
     hero_rgb = cv2.cvtColor(hero_bgr, cv2.COLOR_BGR2RGB)
-    j_rank = ScreenReader._read_rank(hero_rgb[8:83, 15:71])
+    j_rank = ScreenReader._read_rank(hero_rgb[8:68, 15:60])
     seen_ranks.add("J")
     if j_rank != "J":
         failures.append(("hero_j7.png", "J", j_rank))

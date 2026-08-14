@@ -91,28 +91,6 @@
         "left_bottom",
         "left_top"
     ],
-    "player_cache": {
-        "left_bottom": {
-            "screen_name": "ne",
-            "stats": {}
-        },
-        "left_top": {
-            "screen_name": "ye",
-            "stats": {}
-        },
-        "top": {
-            "screen_name": "ape",
-            "stats": {}
-        },
-        "right_bottom": {
-            "screen_name": "ne",
-            "stats": {}
-        },
-        "right_top": {
-            "screen_name": "eepenne",
-            "stats": {}
-        }
-    },
     "fold_button": [
         1988,
         1721
@@ -133,6 +111,6 @@
     "three_bet_size_ip": 3.0,
     "three_bet_size_oop": 3.5,
     "four_bet_size": 2.5,
-    "vpip_threshold": 27.0,
-    "three_bet_threshold": 20.0
+    "turn_poll_interval": 1.0,
+    "turn_confirmations_required": 1
 }

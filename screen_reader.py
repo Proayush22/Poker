@@ -6,7 +6,6 @@ import pyautogui
 from PIL import Image
 import mss
 from typing import Dict, List, Optional, Tuple
-import time
 
 from card_recognizer import CardRecognizer
 
@@ -16,13 +15,12 @@ class ScreenReader:
         self.sct = mss.mss()
         self.last_position_source = 'unreadable'
         self.last_dealer_seat: Optional[str] = None
+        self._cached_hero_position: Optional[str] = None
+        self._cached_seat_to_position: Dict[str, str] = {}
 
     def _pyautogui_region(self, region: Tuple[int, int, int, int]) -> Tuple[int, int, int, int]:
         return self.config.scale_region(region, pyautogui.size())
 
-    def _pyautogui_point(self, point: Tuple[int, int]) -> Tuple[int, int]:
-        return self.config.scale_point(point, pyautogui.size())
-        
     def capture_screen(self) -> np.ndarray:
         """Capture the current screen"""
         monitor_size = (self.sct.monitors[1]['width'], self.sct.monitors[1]['height'])
@@ -31,86 +29,6 @@ class ScreenReader:
         screenshot = self.sct.grab(monitor)
         return np.array(screenshot)
     
-    def read_player_stats(self, position: Tuple[int, int]) -> Optional[Dict[str, float]]:
-        """
-        Read VPIP, PFR, 3-Bet, and C-Bet stats when hovering over a player
-        Returns dict with stats or None if not visible
-        """
-        try:
-            # Hover over player
-            x, y = self._pyautogui_point(position)
-            pyautogui.moveTo(x, y, duration=0.3)
-            time.sleep(0.5)
-            
-            # Capture the hover tooltip area
-            tooltip_region = self._pyautogui_region((position[0] - 175, position[1] - 175, 350, 262))
-            screenshot = pyautogui.screenshot(region=tooltip_region)
-            
-            # Use OCR to read stats
-            text = pytesseract.image_to_string(screenshot)
-            
-            # Parse stats (adjust parsing based on your interface)
-            stats = {}
-            lines = text.split('\n')
-            for line in lines:
-                line_upper = line.upper()
-                if 'VPIP' in line_upper or 'VP' in line_upper:
-                    try:
-                        # Extract number from line
-                        import re
-                        numbers = re.findall(r'\d+\.?\d*', line)
-                        if numbers:
-                            stats['vpip'] = float(numbers[0])
-                    except:
-                        pass
-                elif 'PFR' in line_upper or 'PF' in line_upper:
-                    try:
-                        import re
-                        numbers = re.findall(r'\d+\.?\d*', line)
-                        if numbers:
-                            stats['pfr'] = float(numbers[0])
-                    except:
-                        pass
-                elif '3BET' in line_upper or '3-BET' in line_upper or '3B' in line_upper:
-                    try:
-                        import re
-                        numbers = re.findall(r'\d+\.?\d*', line)
-                        if numbers:
-                            stats['three_bet'] = float(numbers[0])
-                    except:
-                        pass
-                elif 'CBET' in line_upper or 'C-BET' in line_upper or 'CB' in line_upper:
-                    try:
-                        import re
-                        numbers = re.findall(r'\d+\.?\d*', line)
-                        if numbers:
-                            stats['c_bet'] = float(numbers[0])
-                    except:
-                        pass
-            
-            return stats if stats else None
-        except Exception as e:
-            print(f"Error reading player stats: {e}")
-            return None
-
-    def read_player_name(self, position: Tuple[int, int]) -> Optional[str]:
-        """Read the table-visible screen name beneath a player's avatar."""
-        try:
-            # In the calibrated CoinPoker layout, the nameplate sits just below
-            # the avatar. This read does not move the mouse or open a profile.
-            name_region = self._pyautogui_region(
-                (position[0] - 122, position[1] + 78, 244, 52)
-            )
-            screenshot = pyautogui.screenshot(region=name_region)
-            text = pytesseract.image_to_string(screenshot, config='--psm 7')
-            cleaned = ''.join(character for character in text.strip() if character.isalnum() or character in '_-')
-            if not cleaned or cleaned.upper() in {'FOLD', 'BB', 'SB'}:
-                return None
-            return cleaned
-        except Exception as error:
-            print(f"Error reading player name: {error}")
-            return None
-
     def read_player_action(self, position: Tuple[int, int]) -> Optional[str]:
         """Read a visible Fold, Call, Check, Bet, or Raise label at a seat."""
         try:
@@ -239,7 +157,7 @@ class ScreenReader:
 
     @classmethod
     def recognize_hero_cards_image(cls, image_rgb: np.ndarray) -> Tuple[str, str]:
-        """Recognize the two fixed hero-card rank corners and suit glyphs."""
+        """Recognize the two hero-card corner indices after validating faces."""
         image_rgb = image_rgb[:, :, :3]
         height, width = image_rgb.shape[:2]
 
@@ -250,19 +168,39 @@ class ScreenReader:
             ]
 
         rank_regions = (
-            crop_fraction(0.06, 0.05, 0.29, 0.49),
-            crop_fraction(0.46, 0.01, 0.72, 0.41),
+            crop_fraction(0.06, 0.04, 0.25, 0.40),
+            crop_fraction(0.46, 0.01, 0.69, 0.38),
         )
         suit_regions = (
-            crop_fraction(0.06, 0.28, 0.34, 0.76),
-            crop_fraction(0.45, 0.24, 0.78, 0.72),
+            crop_fraction(0.07, 0.36, 0.27, 0.68),
+            crop_fraction(0.46, 0.32, 0.68, 0.64),
         )
-        ranks = [cls._read_rank(region) for region in rank_regions]
-        suits = [cls._read_suit(region) for region in suit_regions]
+        face_regions = (
+            crop_fraction(0.04, 0.02, 0.30, 0.43),
+            crop_fraction(0.44, 0.01, 0.72, 0.42),
+        )
+        faces_present = [cls._has_white_card_face(region) for region in face_regions]
+        ranks = [
+            cls._read_rank(region) if present else None
+            for region, present in zip(rank_regions, faces_present)
+        ]
+        suits = [
+            cls._read_suit(region) if present else None
+            for region, present in zip(suit_regions, faces_present)
+        ]
         cards = []
         for rank, suit in zip(ranks, suits):
             cards.append(f'{rank}{suit}' if rank and suit else '??')
         return tuple(cards)
+
+    @staticmethod
+    def _has_white_card_face(region_rgb: np.ndarray) -> bool:
+        """Reject felt, avatars, and dimmed folded cards before OCR."""
+        region_rgb = region_rgb[:, :, :3]
+        channel_spread = region_rgb.max(axis=2) - region_rgb.min(axis=2)
+        brightness = region_rgb.mean(axis=2)
+        neutral_light_pixels = (brightness >= 160) & (channel_spread <= 50)
+        return np.count_nonzero(neutral_light_pixels) / neutral_light_pixels.size >= 0.30
 
     @staticmethod
     def _read_rank(region_rgb: np.ndarray) -> Optional[str]:
@@ -351,31 +289,83 @@ class ScreenReader:
 
     @staticmethod
     def _read_suit(region_rgb: np.ndarray) -> Optional[str]:
-        template_suit = CardRecognizer.recognize_suit(region_rgb)
-        if template_suit:
-            return template_suit
+        region_rgb = region_rgb[:, :, :3]
         hsv = cv2.cvtColor(region_rgb, cv2.COLOR_RGB2HSV)
         red = cv2.bitwise_or(
             cv2.inRange(hsv, np.array([0, 75, 45]), np.array([12, 255, 255])),
             cv2.inRange(hsv, np.array([165, 75, 45]), np.array([180, 255, 255])),
         )
+        green = cv2.inRange(hsv, np.array([38, 70, 35]), np.array([62, 255, 235]))
+        blue = cv2.inRange(hsv, np.array([102, 70, 40]), np.array([128, 255, 245]))
         gray = cv2.cvtColor(region_rgb, cv2.COLOR_RGB2GRAY)
         black = cv2.inRange(gray, 0, 105)
-        red_area, black_area = np.count_nonzero(red), np.count_nonzero(black)
-        mask, is_red = (red, True) if red_area > black_area * 0.35 else (black, False)
+        red_area = np.count_nonzero(red)
+        green_area = np.count_nonzero(green)
+        blue_area = np.count_nonzero(blue)
+        black_area = np.count_nonzero(black)
+        color_minimum = max(12, round(region_rgb.shape[0] * region_rgb.shape[1] * 0.01))
+
+        def interior_component_area(mask):
+            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            height, width = mask.shape[:2]
+            areas = []
+            for contour in contours:
+                x, y, box_width, box_height = cv2.boundingRect(contour)
+                if x > 0 and y > 0 and x + box_width < width and y + box_height < height:
+                    areas.append(cv2.contourArea(contour))
+            return max(areas, default=0.0)
+
+        green_signal = interior_component_area(green)
+        blue_signal = interior_component_area(blue)
+
+        # In the four-color deck these two hues uniquely identify their suits,
+        # so no shape comparison or OCR process is needed.
+        if blue_signal >= color_minimum and blue_signal > green_signal:
+            return '♦'
+        if green_signal >= color_minimum and green_signal > blue_signal:
+            return '♣'
+
+        # Color is a hard constraint: diamonds/hearts are red and
+        # spades/clubs are black. This prevents similarly pointed ♦/♠ glyphs
+        # from ever competing against one another in template matching.
+        is_red = red_area >= max(12, black_area * 0.25)
+        mask = red if is_red else black
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         contours = [contour for contour in contours if cv2.contourArea(contour) > mask.size * 0.01]
         if not contours:
-            return None
+            return CardRecognizer.recognize_suit(region_rgb, is_red=is_red)
         contour = max(contours, key=cv2.contourArea)
+
+        if is_red:
+            # CoinPoker's diamond is a narrow convex rhombus, while its heart
+            # has rounded lobes and a shallow notch. At this rendered size the
+            # contour solidity is markedly different even when anti-aliased:
+            # diamonds cluster near .84 and hearts near .95.
+            hull = cv2.convexHull(contour)
+            hull_area = cv2.contourArea(hull)
+            solidity = cv2.contourArea(contour) / hull_area if hull_area else 0.0
+            if solidity <= 0.89:
+                return '♦'
+            if solidity >= 0.92:
+                return '♥'
+
+        template_suit = CardRecognizer.recognize_suit(region_rgb, is_red=is_red)
+        if template_suit:
+            return template_suit
         perimeter = cv2.arcLength(contour, True)
         vertices = len(cv2.approxPolyDP(contour, 0.04 * perimeter, True))
         if is_red:
             return '♦' if vertices <= 5 else '♥'
         return '♠' if vertices <= 7 else '♣'
 
-    def read_hero_position(self) -> Tuple[Optional[str], Dict[str, str]]:
+    def read_hero_position(
+        self, use_cached: bool = False
+    ) -> Tuple[Optional[str], Dict[str, str]]:
         """Infer positions from the dealer puck, with blind badges as backup."""
+        if use_cached and self._cached_hero_position and self._cached_seat_to_position:
+            self.last_position_source = 'dealer button (same hand)'
+            return self._cached_hero_position, self._cached_seat_to_position.copy()
+
         self.last_position_source = 'unreadable'
         self.last_dealer_seat = None
 
@@ -404,6 +394,8 @@ class ScreenReader:
                 if hero_position:
                     self.last_position_source = 'dealer button'
                     self.last_dealer_seat = dealer_seat
+                    self._cached_hero_position = hero_position
+                    self._cached_seat_to_position = seat_to_position.copy()
                     return hero_position, seat_to_position
         except Exception as error:
             print(f"Dealer-button detection error: {error}")
@@ -421,6 +413,8 @@ class ScreenReader:
         )
         if hero_position:
             self.last_position_source = 'SB/BB badge OCR (fallback)'
+            self._cached_hero_position = hero_position
+            self._cached_seat_to_position = seat_to_position.copy()
         return hero_position, seat_to_position
 
     @staticmethod

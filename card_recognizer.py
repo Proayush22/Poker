@@ -21,8 +21,12 @@ class CardRecognizer:
             cv2.inRange(hsv, np.array([0, 65, 35]), np.array([14, 255, 255])),
             cv2.inRange(hsv, np.array([164, 65, 35]), np.array([180, 255, 255])),
         )
+        # Four-color CoinPoker deck: green clubs and blue diamonds. The green
+        # range deliberately stops below the teal felt hue.
+        green = cv2.inRange(hsv, np.array([36, 55, 30]), np.array([68, 255, 245]))
+        blue = cv2.inRange(hsv, np.array([96, 55, 30]), np.array([132, 255, 245]))
         black = cv2.inRange(gray, 0, 115)
-        mask = cv2.bitwise_or(red, black)
+        mask = cv2.bitwise_or(cv2.bitwise_or(red, green), cv2.bitwise_or(blue, black))
         return cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
 
     @classmethod
@@ -72,7 +76,12 @@ class CardRecognizer:
         return cls._templates
 
     @classmethod
-    def _recognize(cls, region_rgb: np.ndarray, kind: str) -> Optional[str]:
+    def _recognize(
+        cls,
+        region_rgb: np.ndarray,
+        kind: str,
+        allowed_labels=None,
+    ) -> Optional[str]:
         templates = cls._load()
         if not templates:
             return None
@@ -81,12 +90,19 @@ class CardRecognizer:
             return None
         images = templates[f"{kind}_images"]
         labels = templates[f"{kind}_labels"]
+        choices = [
+            (template, label)
+            for template, label in zip(images, labels)
+            if allowed_labels is None or str(label) in allowed_labels
+        ]
+        if not choices:
+            return None
         scores = [
             cv2.matchTemplate(candidate, template, cv2.TM_CCOEFF_NORMED)[0, 0]
-            for template in images
+            for template, _ in choices
         ]
         best = int(np.argmax(scores))
-        return str(labels[best]) if scores[best] >= 0.35 else None
+        return str(choices[best][1]) if scores[best] >= 0.35 else None
 
     @classmethod
     def recognize_rank(cls, region_rgb: np.ndarray) -> Optional[str]:
@@ -127,5 +143,8 @@ class CardRecognizer:
         return label, score, score - runner_up
 
     @classmethod
-    def recognize_suit(cls, region_rgb: np.ndarray) -> Optional[str]:
-        return cls._recognize(region_rgb, "suit")
+    def recognize_suit(
+        cls, region_rgb: np.ndarray, is_red: Optional[bool] = None
+    ) -> Optional[str]:
+        allowed = {'♦', '♥'} if is_red is True else {'♠', '♣'} if is_red is False else None
+        return cls._recognize(region_rgb, "suit", allowed_labels=allowed)

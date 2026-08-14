@@ -105,23 +105,6 @@ class HandEvaluator:
         
         return False
     
-    def is_three_bet_hand(self, hand_info: Dict, position: str, 
-                          opponent_stats: Dict) -> bool:
-        """Determine if hand is good for 3-betting"""
-        if hand_info['category'] == 'unknown':
-            return False
-        
-        if opponent_stats.get('three_bet', 0) > 20:
-            # Against aggressive 3-bettor, widen value range
-            if hand_info['is_pair']:
-                return hand_info['high_rank'] >= 10  # TT+
-            if hand_info['is_suited']:
-                return hand_info['high_rank'] >= 14 or hand_info['strength'] >= 40
-            return hand_info['high_rank'] >= 14 and hand_info['low_rank'] >= 12
-        
-        # Standard 3-bet range
-        return self.is_in_premium_range(hand_info)
-
     def evaluate_postflop(self, hero_cards: List[str], board_cards: List[str]) -> Dict:
         """Describe hero's made hand, pair quality, draws, and approximate outs."""
         parsed_hero = [self._parse_card(card) for card in hero_cards]

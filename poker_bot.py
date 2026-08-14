@@ -1,7 +1,7 @@
 # poker_bot.py
 import time
 import threading
-from typing import Any, Callable, Dict, Optional
+from typing import Callable, Dict, Optional
 from screen_reader import ScreenReader
 from strategy_engine import StrategyEngine, Action, Street
 from action_executer import ActionExecutor
@@ -22,7 +22,6 @@ class PokerBot:
         self.paused = False
         self.current_street = Street.PREFLOP
         self.game_state = {}
-        self.player_cache: Dict[str, Dict[str, Any]] = self.config.player_cache
         self.observer: Optional[Callable[[str, Dict], None]] = None
         self._turn_confirmations = 0
         self._turn_action_taken = False
@@ -52,6 +51,10 @@ class PokerBot:
             self.running = True
             self.paused = False
             print("Poker Bot started. Press F10 to stop, F8 to pause/resume.")
+            print(
+                f"Turn detector checks every {self.config.turn_poll_interval:.1f}s "
+                f"and requires {self.config.turn_confirmations_required} confirmation."
+            )
             
             # Start bot in separate thread
             bot_thread = threading.Thread(target=self._bot_loop, daemon=True)
@@ -76,7 +79,10 @@ class PokerBot:
                     self._turn_confirmations = self._turn_confirmations + 1 if turn_visible else 0
                     if not turn_visible:
                         self._turn_action_taken = False
-                    confirmed = self._turn_confirmations >= 2
+                    confirmed = (
+                        self._turn_confirmations
+                        >= self.config.turn_confirmations_required
+                    )
                     self._publish('turn', {
                         'visible': turn_visible,
                         'confirmed': confirmed,
@@ -84,7 +90,7 @@ class PokerBot:
                     })
                     if confirmed and not self._turn_action_taken:
                         self._turn_action_taken = self.play_hand()
-                    time.sleep(1)  # Check every second
+                    time.sleep(self.config.turn_poll_interval)
                 except Exception as e:
                     print(f"Error in bot loop: {e}")
                     time.sleep(2)
@@ -160,7 +166,11 @@ class PokerBot:
         raise_amount = self.screen_reader.read_raise_amount()
         bet_input_amount = self.screen_reader.read_bet_input_amount()
 
-        hero_position, seat_to_position = self.screen_reader.read_hero_position()
+        # The button cannot move after the flop. Reuse the preflop mapping on
+        # later streets instead of spending roughly 2.5 seconds finding D again.
+        hero_position, seat_to_position = self.screen_reader.read_hero_position(
+            use_cached=street != Street.PREFLOP
+        )
 
         observed_actions = {}
         for seat, coords in self.config.player_positions.items():
@@ -196,8 +206,6 @@ class PokerBot:
             elif raises_seen >= 2 or to_call >= 4.0:
                 facing_three_bet = True
         
-        opponents_stats = self._get_opponent_stats()
-        
         # Update game state
         self.game_state = {
             'hero_cards': hero_cards,
@@ -206,7 +214,6 @@ class PokerBot:
             'position': hero_position or 'unknown',
             'pot_size': pot_size,
             'hero_stack': hero_stack,
-            'opponents_stats': opponents_stats,
             'observed_actions': observed_actions,
             'to_call': to_call,
             'call_control': call_control,
@@ -233,36 +240,6 @@ class PokerBot:
         }
         self.current_street = street
         self._publish('state', self.game_state.copy())
-
-    def _get_opponent_stats(self) -> Dict[str, Dict[str, float]]:
-        """Use cached stats unless a different name appears in a seat."""
-        opponents_stats = {}
-        cache_changed = False
-
-        for position, coords in self.config.player_positions.items():
-            if position == 'hero':
-                continue
-
-            screen_name = self.screen_reader.read_player_name(coords)
-            cached = self.player_cache.get(position)
-            if screen_name and (not cached or cached.get('screen_name') != screen_name):
-                stats = self.screen_reader.read_player_stats(coords)
-                cached = {'screen_name': screen_name, 'stats': stats or {}}
-                self.player_cache[position] = cached
-                cache_changed = True
-                self._publish('player', {
-                    'seat': position,
-                    'screen_name': screen_name,
-                    'refreshed': True,
-                })
-
-            if cached and cached.get('stats'):
-                opponents_stats[position] = cached['stats']
-
-        if cache_changed:
-            self.config.player_cache = self.player_cache
-            self.config.save()
-        return opponents_stats
 
     def analyze_screen(self):
         """Read the table and publish a suggested action without clicking."""

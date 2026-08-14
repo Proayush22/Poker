@@ -14,17 +14,7 @@ pynput==1.7.6
 import json
 import os
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
-
-@dataclass
-class Position:
-    name: str
-    x: int
-    y: int
-    vpip: Optional[float] = None
-    pfr: Optional[float] = None
-    three_bet: Optional[float] = None
-    c_bet: Optional[float] = None
+from typing import Dict, List, Optional, Tuple
 
 @dataclass
 class PokerConfig:
@@ -41,7 +31,7 @@ class PokerConfig:
     raise_button_region: Tuple[int, int, int, int] = (2332, 1672, 207, 99)
     bet_input_region: Tuple[int, int, int, int] = (2230, 1595, 160, 65)
     player_positions: Dict[str, Tuple[int, int]] = field(default_factory=lambda: {
-        # Avatar centers — used when hovering to reveal a player profile.
+        # Seat centers used for action labels and dealer-position mapping.
         'hero': (1720, 1518),
         'left_bottom': (1117, 1293),
         'left_top': (1134, 794),
@@ -52,10 +42,6 @@ class PokerConfig:
     seat_clockwise_order: List[str] = field(default_factory=lambda: [
         'top', 'right_top', 'right_bottom', 'hero', 'left_bottom', 'left_top'
     ])
-    # Cached opponent profiles keyed by seat. A profile is refreshed only when
-    # the visible screen name at that seat changes.
-    player_cache: Dict[str, Dict[str, Any]] = field(default_factory=dict)
-    
     # Betting buttons
     fold_button: Optional[Tuple[int, int]] = (1988, 1721)
     call_button: Optional[Tuple[int, int]] = (2212, 1721)
@@ -68,9 +54,9 @@ class PokerConfig:
     three_bet_size_oop: float = 3.5
     four_bet_size: float = 2.5
     
-    # Strategy parameters
-    vpip_threshold: float = 27.0
-    three_bet_threshold: float = 20.0
+    # Timing: action controls are distinctive enough for one confirmation.
+    turn_poll_interval: float = 1.0
+    turn_confirmations_required: int = 1
 
     def scale_point(self, point: Tuple[int, int], screen_size: Tuple[int, int]) -> Tuple[int, int]:
         """Scale a point from the reference screenshot to the active display."""

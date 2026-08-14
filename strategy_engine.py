@@ -1,7 +1,6 @@
 # strategy_engine.py
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Optional, Tuple
 from enum import Enum
-import random
 
 from hand_evaluator import HandEvaluator
 
@@ -38,7 +37,6 @@ class StrategyEngine:
         - hero_stack
         - current_bet
         - to_call
-        - opponents_stats (dict of position -> stats)
         - action_history
         """
         self.last_reason = ''
@@ -76,9 +74,6 @@ class StrategyEngine:
         facing_three_bet = state.get('facing_three_bet', False)
         facing_four_bet = state.get('facing_four_bet', False)
         
-        # Get aggressive opponent info
-        opponent_stats = self.get_aggressive_opponent_stats(state)
-        
         # Facing a 4-bet after we 3-bet: continue only with the top of range.
         if facing_four_bet:
             if self._is_pair_at_least(hand_info, 13):  # KK+
@@ -95,12 +90,6 @@ class StrategyEngine:
             if self._is_four_bet_value(hand_info):
                 self.last_reason = 'In the pure-value four-bet range (QQ+ or AK); raising.'
                 return Action.RAISE, self.calculate_four_bet_size(state)
-            if (
-                self._is_wheel_ace(hand_info)
-                and opponent_stats.get('three_bet', 0) >= self.config.three_bet_threshold
-            ):
-                self.last_reason = 'Wheel-ace bluff enabled against a highly aggressive three-bettor.'
-                return Action.RAISE, self.calculate_four_bet_size(state)
             if self._is_trap_hand(hand_info):  # TT/JJ/AQs/AQo
                 self.last_reason = 'Trap-range hand versus a three-bet; calling rather than four-betting.'
                 return Action.CALL, None
@@ -112,7 +101,7 @@ class StrategyEngine:
             return self.unraised_pot_strategy(hand_info, position, state)
         
         # Facing a single raise
-        return self.facing_raise_strategy(hand_info, position, state, opponent_stats)
+        return self.facing_raise_strategy(hand_info, position, state)
     
     def unraised_pot_strategy(self, hand_info: Dict, position: str, 
                               state: Dict) -> Tuple[Action, Optional[float]]:
@@ -127,7 +116,7 @@ class StrategyEngine:
         return Action.FOLD, None
     
     def facing_raise_strategy(self, hand_info: Dict, position: str, 
-                              state: Dict, opponent_stats: Dict) -> Tuple[Action, Optional[float]]:
+                              state: Dict) -> Tuple[Action, Optional[float]]:
         """Strategy when facing a raise"""
         raiser_position = state.get('raiser_position')
 
@@ -484,14 +473,3 @@ class StrategyEngine:
         """Calculate 4-bet size"""
         return self.config.four_bet_size * state.get('current_bet', 1)
     
-    def get_aggressive_opponent_stats(self, state: Dict) -> Dict:
-        """Get stats for the most aggressive opponent"""
-        max_three_bet = 0
-        aggressive_stats = {}
-        
-        for pos, stats in state.get('opponents_stats', {}).items():
-            if stats.get('three_bet', 0) > max_three_bet:
-                max_three_bet = stats['three_bet']
-                aggressive_stats = stats
-        
-        return aggressive_stats
