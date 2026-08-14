@@ -286,24 +286,49 @@ class PokerBot:
         seat = self._profile_seats[self._profile_scan_index % len(self._profile_seats)]
         self._profile_scan_index += 1
         coords = self.config.player_positions[seat]
-        screen_name = self.screen_reader.read_player_name(coords)
-        if not screen_name:
+        nameplate_text = self.screen_reader.read_player_name(coords)
+        if not nameplate_text:
             return
 
-        changed = self.seat_players.get(seat) != screen_name
-        self.seat_players[seat] = screen_name
+        previous_name = self.seat_players.get(seat)
+        previous_profile = self.player_profiles.get(previous_name) if previous_name else None
+        # Once the popup supplies the canonical name, remember which nameplate
+        # OCR produced it. This avoids reopening the same profile when a glyph
+        # such as "1" is consistently rendered as "i" on the nameplate.
+        same_nameplate = bool(
+            previous_profile
+            and previous_profile.get('nameplate_text') == nameplate_text
+        )
+        screen_name = previous_name if same_nameplate else nameplate_text
         profile = self.player_profiles.setdefault(screen_name, {
             'screen_name': screen_name,
+            'nameplate_text': nameplate_text,
             'external_stats': {},
             'tooltip_scanned': False,
             'observed': self._empty_observed_profile(),
         })
-        if changed or not profile.get('tooltip_scanned'):
+        changed = previous_name != screen_name
+        # Retry profiles saved by the older popup reader when that scan was
+        # marked complete but produced no usable statistics.
+        if changed or not profile.get('external_stats'):
             external = self.screen_reader.read_player_stats(coords)
+            popup_name = self.screen_reader.last_profile_name
+            if popup_name and popup_name != screen_name:
+                screen_name = popup_name
+                changed = previous_name != screen_name
+                profile = self.player_profiles.setdefault(screen_name, {
+                    'screen_name': screen_name,
+                    'nameplate_text': nameplate_text,
+                    'external_stats': {},
+                    'tooltip_scanned': False,
+                    'observed': self._empty_observed_profile(),
+                })
             if external:
                 profile['external_stats'] = external
-            profile['tooltip_scanned'] = True
+            profile['nameplate_text'] = nameplate_text
+            profile['tooltip_scanned'] = bool(external)
 
+        self.seat_players[seat] = screen_name
         self._save_profiles()
         self._publish('player_profile', {
             'seat': seat,
@@ -504,6 +529,7 @@ class PokerBot:
                     'vpip': profile.get('vpip'),
                     'pfr': profile.get('pfr'),
                     '3bet': profile.get('three_bet'),
+                    'cbet': profile.get('c_bet'),
                     'AF': profile.get('aggression_factor'),
                     'fold': profile.get('fold_rate'),
                 }

@@ -18,6 +18,7 @@ class ScreenReader:
         self.last_dealer_seat: Optional[str] = None
         self._cached_hero_position: Optional[str] = None
         self._cached_seat_to_position: Dict[str, str] = {}
+        self.last_profile_name: Optional[str] = None
 
     def _pyautogui_region(self, region: Tuple[int, int, int, int]) -> Tuple[int, int, int, int]:
         return self.config.scale_region(region, pyautogui.size())
@@ -37,49 +38,147 @@ class ScreenReader:
                 (position[0] - 122, position[1] + 78, 244, 52)
             )
             screenshot = pyautogui.screenshot(region=name_region)
-            text = pytesseract.image_to_string(screenshot, config='--psm 7')
-            cleaned = ''.join(
-                character for character in text.strip()
-                if character.isalnum() or character in '_-'
+            return self.read_player_name_image(np.array(screenshot))
+        except Exception:
+            return None
+
+    @staticmethod
+    def read_player_name_image(image_rgb: np.ndarray) -> Optional[str]:
+        """Read a nameplate, preferring its high-contrast text rendering."""
+        try:
+            image_rgb = image_rgb[:, :, :3]
+            enlarged = cv2.resize(image_rgb, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
+            gray = cv2.cvtColor(enlarged, cv2.COLOR_RGB2GRAY)
+            _, high_contrast = cv2.threshold(gray, 160, 255, cv2.THRESH_BINARY)
+            texts = (
+                pytesseract.image_to_string(high_contrast, config='--psm 7'),
+                pytesseract.image_to_string(image_rgb, config='--psm 7'),
             )
-            if not cleaned or cleaned.upper() in {'FOLD', 'CALL', 'CHECK', 'BET', 'RAISE', 'BB', 'SB'}:
+            cleaned_candidates = [
+                ''.join(
+                    character for character in text.strip()
+                    if character.isalnum() or character in '_-'
+                )
+                for text in texts
+            ]
+            cleaned_candidates = [
+                candidate for candidate in cleaned_candidates
+                if candidate
+                and candidate.upper() not in {'FOLD', 'CALL', 'CHECK', 'BET', 'RAISE', 'BB', 'SB'}
+            ]
+            if not cleaned_candidates:
                 return None
-            return cleaned
+            return max(cleaned_candidates, key=len)
         except Exception:
             return None
 
     def read_player_stats(self, position: Tuple[int, int]) -> Dict[str, float]:
         """Hover the avatar center and OCR any displayed poker statistics."""
-        import re
-
+        self.last_profile_name = None
         try:
             x, y = self.config.scale_point(position, pyautogui.size())
             pyautogui.moveTo(x, y, duration=0.2)
             time.sleep(0.35)
+            seat = min(
+                self.config.player_positions,
+                key=lambda name: (
+                    (self.config.player_positions[name][0] - position[0]) ** 2
+                    + (self.config.player_positions[name][1] - position[1]) ** 2
+                ),
+            )
+            # CoinPoker places the popup away from the table edge: right of
+            # left seats, left of right seats, and below the top seat.
+            offsets = {
+                'top': (-320, 195),
+                'right_top': (-725, -145),
+                'right_bottom': (-710, -150),
+                'left_bottom': (80, -150),
+                'left_top': (95, -145),
+                'hero': (-310, -500),
+            }
+            dx, dy = offsets.get(seat, (-310, -150))
             tooltip_region = self._pyautogui_region(
-                (position[0] - 190, position[1] - 190, 380, 300)
+                (position[0] + dx, position[1] + dy, 620, 385)
             )
             screenshot = pyautogui.screenshot(region=tooltip_region)
-            text = pytesseract.image_to_string(screenshot, config='--psm 6')
-            stats = {}
-            aliases = {
-                'vpip': ('VPIP', 'VP'),
-                'pfr': ('PFR', 'PF'),
-                'three_bet': ('3BET', '3-BET', '3B'),
-                'c_bet': ('CBET', 'C-BET', 'CB'),
-            }
-            for line in text.splitlines():
-                upper = line.upper().replace(' ', '')
-                for stat, labels in aliases.items():
-                    if any(label.replace(' ', '') in upper for label in labels):
-                        numbers = re.findall(r'\d+(?:\.\d+)?', line)
-                        if numbers:
-                            value = float(numbers[-1])
-                            if 0 <= value <= 100:
-                                stats[stat] = value
-            return stats
+            popup_image = np.array(screenshot)
+            self.last_profile_name = self.read_player_profile_name_image(popup_image)
+            return self.read_player_stats_image(popup_image)
         except Exception:
             return {}
+
+    @staticmethod
+    def read_player_profile_name_image(image_rgb: np.ndarray) -> Optional[str]:
+        """Read the canonical screen name from the popup header."""
+        import re
+
+        image_rgb = image_rgb[:, :, :3]
+        header = image_rgb[:max(1, round(image_rgb.shape[0] * 110 / 385)), :]
+        header = cv2.resize(header, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
+        text = pytesseract.image_to_string(header, config='--psm 7')
+        match = re.search(r'([A-Za-z0-9_-]{2,})\s+Device\s*:', text, re.IGNORECASE)
+        return match.group(1) if match else None
+
+    @staticmethod
+    def read_player_stats_image(image_rgb: np.ndarray) -> Dict[str, float]:
+        """Read VPIP/PFR/3-bet/C-bet from CoinPoker's four circular gauges."""
+        import re
+
+        image_rgb = image_rgb[:, :, :3]
+        height, width = image_rgb.shape[:2]
+        labels = ('vpip', 'pfr', 'three_bet', 'c_bet')
+        center_x_fractions = (100 / 620, 240 / 620, 380 / 620, 520 / 620)
+        center_y = round(height * (300 / 385))
+        half_width = max(12, round(width * (30 / 620)))
+        half_height = max(9, round(height * (18 / 385)))
+        stats = {}
+
+        for index, (label, center_x_fraction) in enumerate(zip(labels, center_x_fractions)):
+            center_x = round(width * center_x_fraction)
+            roi = image_rgb[
+                max(0, center_y - half_height):min(height, center_y + half_height),
+                max(0, center_x - half_width):min(width, center_x + half_width),
+            ]
+            if roi.size == 0:
+                continue
+            gray = cv2.cvtColor(roi, cv2.COLOR_RGB2GRAY)
+            enlarged = cv2.resize(gray, None, fx=5, fy=5, interpolation=cv2.INTER_CUBIC)
+
+            def ocr_value(view) -> Optional[float]:
+                text = pytesseract.image_to_string(
+                    view,
+                    config='--psm 10 -c tessedit_char_whitelist=0123456789',
+                )
+                match = re.search(r'\d{1,3}', text)
+                if not match:
+                    return None
+                value = float(match.group(0))
+                return value if 0 <= value <= 100 else None
+
+            value = ocr_value(enlarged)
+
+            # A low C-bet arc cannot represent a value in the high nineties.
+            # In that one ambiguous rendering Tesseract confuses 56 with 96;
+            # a thresholded retry cleanly separates the leading digit.
+            if index == 3 and value is not None and value >= 90:
+                hsv = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2HSV)
+                scale = min(width / 620, height / 385)
+                yy, xx = np.ogrid[:height, :width]
+                radius = np.sqrt((xx - center_x) ** 2 + (yy - center_y) ** 2)
+                ring = (radius >= 35 * scale) & (radius <= 48 * scale)
+                saturated_ratio = (
+                    float(np.mean(hsv[:, :, 1][ring] > 100)) if np.any(ring) else 0.0
+                )
+                if saturated_ratio < 0.25:
+                    _, thresholded = cv2.threshold(enlarged, 130, 255, cv2.THRESH_BINARY)
+                    value = ocr_value(thresholded) or value
+
+            if value is None:
+                _, thresholded = cv2.threshold(enlarged, 130, 255, cv2.THRESH_BINARY)
+                value = ocr_value(thresholded)
+            if value is not None:
+                stats[label] = value
+        return stats
     
     def read_player_action(self, position: Tuple[int, int]) -> Optional[str]:
         """Read a visible Fold, Call, Check, Bet, or Raise label at a seat."""
